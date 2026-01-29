@@ -1,8 +1,8 @@
 # Credit-Probability-Model
 
-## Project Initialization
+## Reproducible Environment
 
-Follow these steps to set up the project environment:
+Follow these steps to reproduce the project environment locally:
 
 1. **Clone the repository**
    ```bash
@@ -10,12 +10,17 @@ Follow these steps to set up the project environment:
    cd Credit-Probability-Model
    ```
 
-2. **Create a virtual environment**
+2. **Check your Python version (3.10+ recommended)**
+   ```bash
+   python3 --version
+   ```
+
+3. **Create a virtual environment**
    ```bash
    python3 -m venv .venv
    ```
 
-3. **Activate the virtual environment**
+4. **Activate the virtual environment**
    - On Linux/macOS:
      ```bash
      source .venv/bin/activate
@@ -25,7 +30,13 @@ Follow these steps to set up the project environment:
      .\.venv\Scripts\activate
      ```
 
-4. **Install dependencies**
+5. **Upgrade pip and install dependencies**
    ```bash
+   python -m pip install --upgrade pip
    pip install -r requirements.txt
+   ```
+
+6. **Verify the environment (optional)**
+   ```bash
+   pip check
    ```

@@ -75,7 +75,7 @@ def predict_risk(customer_id: str, request: CreditScoringRequest, is_raw: bool =
         
         # Call predict with the is_raw flag
         result = model_engine.predict(input_data, is_raw=is_raw)
-        is_approved = result['credit_score'] >= 650
+        is_approved = result['credit_score'] >= 600
 
         return CreditScoringResponse(
             customer_id=customer_id,

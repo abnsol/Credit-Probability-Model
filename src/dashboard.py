@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import json
 
 # Page configuration
-icon = Image.open("assets/Bati.png")
+icon = Image.open("src/assets/Bati.png")
 st.set_page_config(
     page_title="Bati Bank - Credit Risk Scoring", page_icon=icon, layout="wide"
 )
@@ -131,14 +131,19 @@ if score_button and features and api_status:
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("Credit Score", f"{result['credit_score']}/850")
-        with col2:
-            st.metric("Default Probability", f"{result['probability_of_default']*100:.2f}%")
-        with col3:
-            st.metric("Risk Tier", result['risk_tier'])
-        with col4:
-            status = "APPROVED" if result['approved'] else "REJECTED"
-            st.metric("Decision", status)
+            st.metric("Credit Score", f"{result['credit_score']}/850") 
+        with col2: 
+            st.metric("Default Probability", f"{result['probability_of_default']*100:.4f}") 
+        with col3: 
+            st.metric("Risk Tier", result['risk_tier']) 
+            # Debug output 
+            st.info(f"Debug: PD={result['probability_of_default']}, Score={result['credit_score']}, Tier={result['risk_tier']}") 
+            # Optionally log to console 
+            import logging 
+            logging.info(f"DASHBOARD DEBUG: PD={result['probability_of_default']}, Score={result['credit_score']}, Tier={result['risk_tier']}") 
+        with col4: 
+            status = "APPROVED" if result.get('approved', False) else "REJECTED" 
+            st.metric("Decision", status) 
         
         # Gauge Chart
         st.markdown("---")

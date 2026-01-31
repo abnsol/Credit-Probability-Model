@@ -35,6 +35,7 @@ class CreditScoringModel:
         self.preprocessing_pipeline = self._load_preprocessing_pipeline()
         self.ml_pipeline = self._load_ml_pipeline()
         self.rfm_scaler = self._load_rfm_scaler()
+        self.rfm_model = self._load_rfm_model()  # Dedicated RFM model
 
         self.MIN_SCORE = 300
         self.MAX_SCORE = 850
@@ -95,6 +96,22 @@ class CreditScoringModel:
                 return None
         except Exception as e:
             logger.warning(f"Could not load RFM scaler: {e}")
+            return None
+
+    def _load_rfm_model(self):
+        """Loads the dedicated RFM model for quick scoring with 5 features"""
+        try:
+            model_path = "models/rfm_model.pkl"
+            if os.path.exists(model_path):
+                with open(model_path, 'rb') as f:
+                    model = pickle.load(f)
+                logger.info("Dedicated RFM model loaded successfully")
+                return model
+            else:
+                logger.warning(f"RFM model not found at {model_path}")
+                return None
+        except Exception as e:
+            logger.warning(f"Could not load RFM model: {e}")
             return None
 
     def calculate_credit_score(self, probability_of_default):
@@ -163,20 +180,82 @@ class CreditScoringModel:
                 except Exception as e:
                     logger.warning(f"ML pipeline transformation failed: {e}. Using features as-is.")
             elif is_rfm_aggregated:
-                logger.info("Input is RFM-aggregated (5 features). Applying RFM scaler...")
-                # Apply RFM scaler to standardize raw values
-                if self.rfm_scaler is not None:
-                    try:
-                        rfm_values = df[rfm_features].values
-                        logger.info(f"Raw RFM values: {rfm_values}")
-                        scaled_values = self.rfm_scaler.transform(rfm_values)
-                        logger.info(f"Scaled RFM values: {scaled_values}")
-                        df[rfm_features] = scaled_values
-                        logger.info("RFM features scaled successfully")
-                    except Exception as e:
-                        logger.warning(f"RFM scaling failed: {e}. Using raw values (may produce inaccurate scores).")
-                else:
-                    logger.warning("RFM scaler not available. Raw values may produce inaccurate scores.")
+                logger.info("Input is RFM-aggregated (5 features). Using RFM Scorecard method...")
+                
+                # Check if we have the scaler
+                if self.rfm_scaler is None:
+                    logger.error("⚠️ RFM scaler NOT FOUND! Run train.py to generate it.")
+                    raise ValueError("RFM scaler not available. Please run train.py first.")
+                
+                # Get raw values
+                recency = df['Recency'].values[0]
+                frequency = df['Frequency'].values[0]
+                monetary_total = df['Monetary_Total'].values[0]
+                monetary_mean = df['Monetary_Mean'].values[0]
+                monetary_std = df['Monetary_Std'].values[0]
+                
+                logger.info(f"Raw RFM values: Recency={recency}, Frequency={frequency}, Monetary_Total={monetary_total}")
+                
+                # Get scaler parameters (mean and std for each feature)
+                # Features order: ['Recency', 'Frequency', 'Monetary_Total', 'Monetary_Mean', 'Monetary_Std']
+                means = self.rfm_scaler.mean_
+                stds = self.rfm_scaler.scale_
+                
+                # Calculate z-scores for each feature
+                z_recency = (recency - means[0]) / stds[0]
+                z_frequency = (frequency - means[1]) / stds[1]
+                z_monetary_total = (monetary_total - means[2]) / stds[2]
+                z_monetary_mean = (monetary_mean - means[3]) / stds[3]
+                z_monetary_std = (monetary_std - means[4]) / stds[4]
+                
+                logger.info(f"Z-scores: Recency={z_recency:.3f}, Frequency={z_frequency:.3f}, Monetary={z_monetary_total:.3f}")
+                
+                # RFM Scorecard Formula (based on standard credit scoring methodology)
+                # Base score = 575 (middle of 300-850 range)
+                # Points per standard deviation:
+                #   - Recency: -50 points per SD (higher recency = worse = lower score)
+                #   - Frequency: +30 points per SD (higher frequency = better = higher score)
+                #   - Monetary_Total: +40 points per SD (higher monetary = better = higher score)
+                #   - Monetary_Mean: +20 points per SD
+                #   - Monetary_Std: -10 points per SD (high variance = slightly risky)
+                
+                base_score = 575
+                
+                # Calculate score contributions
+                score_recency = -50 * z_recency  # Negative because high recency is bad
+                score_frequency = 30 * z_frequency
+                score_monetary_total = 40 * z_monetary_total
+                score_monetary_mean = 20 * z_monetary_mean
+                score_monetary_std = -10 * z_monetary_std  # High std = volatile = slightly bad
+                
+                # Total score
+                raw_score = base_score + score_recency + score_frequency + score_monetary_total + score_monetary_mean + score_monetary_std
+                
+                # Clamp to valid range
+                credit_score = max(self.MIN_SCORE, min(self.MAX_SCORE, int(raw_score)))
+                
+                # Calculate probability of default from score
+                # Using standard scorecard conversion: Score = Offset - Factor * ln(Odds)
+                # Where Odds = P(Good) / P(Bad) = (1-PD) / PD
+                # Rearranging: PD = 1 / (1 + exp((Score - Offset) / Factor))
+                # With Offset=575, Factor=50 (so 50 points = 2x odds change)
+                factor = 50
+                offset = 575
+                odds = 2 ** ((credit_score - offset) / factor)
+                probability_default = 1 / (1 + odds)
+                
+                logger.info(f"Score breakdown: Base={base_score}, Recency={score_recency:.1f}, Freq={score_frequency:.1f}, "
+                           f"MonTotal={score_monetary_total:.1f}, MonMean={score_monetary_mean:.1f}, MonStd={score_monetary_std:.1f}")
+                logger.info(f"Raw score={raw_score:.1f}, Clamped={credit_score}, PD={probability_default:.4f}")
+                
+                risk_tier = self.determine_risk_tier(credit_score)
+                
+                return {
+                    "probability_of_default": round(float(probability_default), 4),
+                    "credit_score": credit_score,
+                    "risk_tier": risk_tier,
+                    "model_version": "1.0.0-scorecard"
+                }
             
             # 5. Alignment Check - Ensure model-expected columns
             expected_cols = self.model.feature_names_in_ if hasattr(self.model, 'feature_names_in_') else None
@@ -205,8 +284,18 @@ class CreditScoringModel:
             X_input = df.values if isinstance(df, pd.DataFrame) else df
             logger.info(f"X_input shape before prediction: {X_input.shape}")
             
+            # DEBUG: Log the actual feature values being sent to model
+            logger.info("=== DEBUG: Feature values for prediction ===")
+            for i, col in enumerate(df.columns):
+                logger.info(f"  {col}: {X_input[0][i]:.4f}")
+            
             # 6. Make Prediction
-            probability_default = self.model.predict_proba(X_input)[:, 1][0]
+            proba_all = self.model.predict_proba(X_input)
+            logger.info(f"DEBUG: predict_proba output: class_0={proba_all[0][0]:.4f}, class_1={proba_all[0][1]:.4f}")
+            logger.info(f"DEBUG: model classes: {self.model.classes_}")
+            
+            # class_1 = probability of high risk (default)
+            probability_default = proba_all[:, 1][0]
             
             # 7. Calculate Score
             credit_score = self.calculate_credit_score(probability_default)

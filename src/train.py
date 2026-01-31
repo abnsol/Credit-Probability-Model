@@ -11,7 +11,7 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
 import mlflow
 import mlflow.sklearn
-from src.data_processing import run_pipeline, create_preprocessing_pipeline, create_ml_pipeline
+from data_processing import run_pipeline, create_preprocessing_pipeline, create_ml_pipeline
 
 # Setup Directories
 os.makedirs("models", exist_ok=True)
@@ -117,6 +117,158 @@ def save_ml_pipeline(ml_pipeline):
     except Exception as e:
         print(f"Warning: Could not save ML pipeline: {e}")
 
+def save_rfm_scaler_from_raw():
+    """
+    Creates and saves a StandardScaler for RFM features using RAW aggregated data.
+    This is critical for the dashboard to work with unscaled RFM inputs.
+    
+    The model_ready_data.csv has already-scaled RFM features, so we need to:
+    1. Load raw data
+    2. Run aggregation (without WoE/StandardScaler)
+    3. Fit scaler on the unscaled RFM values
+    """
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.pipeline import Pipeline
+    from data_processing import TimeFeatureExtractor, CategoricalEncoder, CustomerAggregator, MissingValueHandler, RiskProxyLabeler
+    
+    try:
+        print("Creating RFM scaler from RAW data (not pre-scaled)...")
+        
+        # Load raw data
+        raw_df = pd.read_csv("./data/raw/data.csv")
+        print(f"Loaded raw data: {raw_df.shape}")
+        
+        # Run preprocessing up to aggregation (no WoE/StandardScaler)
+        preprocessing_pipeline = Pipeline([
+            ('time_extraction', TimeFeatureExtractor()),
+            ('categorical_encoding', CategoricalEncoder(columns=['ChannelId', 'ProductCategory', 'PricingStrategy'])),
+            ('aggregation', CustomerAggregator()),
+            ('missing_imputation', MissingValueHandler(strategy='mean')),
+        ])
+        
+        aggregated_df = preprocessing_pipeline.fit_transform(raw_df)
+        print(f"Aggregated data shape: {aggregated_df.shape}")
+        
+        rfm_features = ['Recency', 'Frequency', 'Monetary_Total', 'Monetary_Mean', 'Monetary_Std']
+        
+        # Check if all RFM features exist
+        available_rfm = [col for col in rfm_features if col in aggregated_df.columns]
+        if len(available_rfm) < 5:
+            print(f"Warning: Only found {len(available_rfm)} RFM features: {available_rfm}")
+            return None, None
+        
+        # Generate risk labels using RiskProxyLabeler
+        print("Generating risk labels for RFM model training...")
+        labeler = RiskProxyLabeler(n_clusters=3, random_state=42)
+        labeler.fit(aggregated_df)
+        labeled_df = labeler.transform(aggregated_df)
+        
+        # Fit scaler on UNSCALED RFM values
+        rfm_scaler = StandardScaler()
+        rfm_scaler.fit(aggregated_df[rfm_features])
+        
+        # Print stats for debugging - these should show real data ranges
+        print(f"RFM Scaler stats (from raw aggregated data):")
+        for i, feat in enumerate(rfm_features):
+            print(f"  {feat}: mean={rfm_scaler.mean_[i]:.2f}, std={rfm_scaler.scale_[i]:.2f}")
+        
+        pickle.dump(rfm_scaler, open("models/rfm_scaler.pkl", "wb"))
+        print("✅ RFM scaler saved to models/rfm_scaler.pkl")
+        
+        # Return both scaler and labeled data for RFM model training
+        return rfm_scaler, labeled_df, rfm_features
+    except Exception as e:
+        print(f"Warning: Could not save RFM scaler: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None, None
+
+def train_rfm_model(labeled_df, rfm_features, rfm_scaler):
+    """
+    Trains a dedicated model using only RFM features.
+    This model is specifically for the dashboard's quick scoring feature.
+    
+    Uses a softer labeling approach to get smoother probability distributions.
+    """
+    from sklearn.linear_model import LogisticRegression
+    
+    try:
+        print("\n=== Training Dedicated RFM Model ===")
+        
+        X_rfm = labeled_df[rfm_features].copy()
+        y_original = labeled_df['RiskLabel'].copy()
+        
+        # Scale the RFM features
+        X_rfm_scaled = pd.DataFrame(rfm_scaler.transform(X_rfm), columns=rfm_features)
+        
+        # Create a softer target based on RFM scores (not just cluster labels)
+        # This helps the logistic regression produce smoother probabilities
+        # Risk Score = High Recency (bad) - High Frequency (good) - High Monetary (good)
+        risk_score = X_rfm_scaled['Recency'] - 0.3 * X_rfm_scaled['Frequency'] - 0.3 * X_rfm_scaled['Monetary_Total']
+        
+        # Convert to probability-like target using sigmoid
+        # Add noise to prevent perfect separation
+        np.random.seed(42)
+        noise = np.random.normal(0, 0.3, len(risk_score))
+        risk_score_noisy = risk_score + noise
+        
+        # Use quantile-based labeling for smoother boundaries
+        # Bottom 40% = low risk (0), Top 40% = high risk (1), Middle 20% = mixed
+        quantile_30 = risk_score_noisy.quantile(0.30)
+        quantile_70 = risk_score_noisy.quantile(0.70)
+        
+        # For middle zone, randomly assign based on proximity
+        y_soft = pd.Series(0, index=X_rfm_scaled.index)
+        y_soft[risk_score_noisy > quantile_70] = 1
+        
+        # Middle zone gets probabilistic assignment
+        middle_mask = (risk_score_noisy > quantile_30) & (risk_score_noisy <= quantile_70)
+        middle_probs = (risk_score_noisy[middle_mask] - quantile_30) / (quantile_70 - quantile_30)
+        np.random.seed(42)
+        y_soft[middle_mask] = (np.random.random(middle_mask.sum()) < middle_probs).astype(int)
+        
+        print(f"Soft label distribution: {y_soft.value_counts().to_dict()}")
+        
+        # Train-test split
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_rfm_scaled, y_soft, test_size=0.2, stratify=y_soft, random_state=42
+        )
+        
+        print(f"Training RFM model with {len(rfm_features)} features...")
+        
+        # Use LogisticRegression with lower regularization for smoother probabilities
+        rfm_model = LogisticRegression(C=0.1, solver='lbfgs', random_state=42, max_iter=1000)
+        rfm_model.fit(X_train, y_train)
+        
+        # Evaluate
+        y_pred = rfm_model.predict(X_test)
+        y_pred_proba = rfm_model.predict_proba(X_test)[:, 1]
+        
+        metrics = eval_metrics(y_test, y_pred, y_pred_proba)
+        print(f"RFM Model Performance: AUC={metrics['roc_auc']:.4f}, Accuracy={metrics['accuracy']:.4f}")
+        
+        # Show probability distribution
+        print(f"Probability distribution on test set:")
+        print(f"  Min: {y_pred_proba.min():.4f}, Max: {y_pred_proba.max():.4f}")
+        print(f"  Mean: {y_pred_proba.mean():.4f}, Std: {y_pred_proba.std():.4f}")
+        
+        # Save the RFM-specific model
+        pickle.dump(rfm_model, open("models/rfm_model.pkl", "wb"))
+        print("✅ RFM model saved to models/rfm_model.pkl")
+        
+        # Log coefficients
+        print("Feature Coefficients:")
+        for feat, coef in zip(rfm_features, rfm_model.coef_[0]):
+            print(f"  {feat}: {coef:.4f}")
+        print(f"  Intercept: {rfm_model.intercept_[0]:.4f}")
+        
+        return rfm_model, metrics['roc_auc']
+    except Exception as e:
+        print(f"Warning: Could not train RFM model: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, 0.0
+
 def main():
     # 1. Load Data
     data_path = "./data/processed/model_ready_data.csv"
@@ -125,6 +277,11 @@ def main():
 
     # 2. Save preprocessing pipeline (required for inference to work correctly)
     save_preprocessing_pipeline()
+    
+    # 2b. Save RFM scaler from RAW data and train dedicated RFM model
+    rfm_scaler, labeled_df, rfm_features = save_rfm_scaler_from_raw()
+    if rfm_scaler is not None and labeled_df is not None:
+        train_rfm_model(labeled_df, rfm_features, rfm_scaler)
     
     # 3. Split Features and Target
     # Exclude ID columns and Target

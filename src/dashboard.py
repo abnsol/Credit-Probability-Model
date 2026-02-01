@@ -3,6 +3,7 @@ Streamlit Dashboard for Credit Risk Probability Model
 Bati Bank Credit Scoring System
 """
 
+import os
 from PIL import Image
 import streamlit as st
 import pandas as pd
@@ -28,7 +29,7 @@ st.markdown(
 )
 
 # ==================== API Configuration ====================
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 
 def check_api_health() -> bool:

@@ -146,7 +146,61 @@ Credit-Probability-Model/
 │   ├── predict.py             # Prediction/scoring engine
 │   └── train.py               # Model training script
 ├── requirements.txt           # Python dependencies
+├── Dockerfile                 # Container image definition
+├── docker-compose.yml         # Multi-service orchestration
 └── README.md
+```
+
+---
+
+## Docker Deployment
+
+### Prerequisites
+
+- Docker and Docker Compose installed
+- Models trained and saved in `models/` directory
+
+### Build and Run All Services
+
+```bash
+# Build and start all services (API, Dashboard, MLflow)
+docker-compose up --build
+
+# Or run in detached mode
+docker-compose up --build -d
+```
+
+### Services Available
+
+| Service    | URL                    | Description                     |
+|------------|------------------------|---------------------------------|
+| API        | http://localhost:8000  | Credit Scoring REST API         |
+| Dashboard  | http://localhost:8501  | Streamlit Dashboard             |
+| MLflow     | http://localhost:5000  | MLflow Tracking UI              |
+
+### Run Individual Services
+
+```bash
+# API only
+docker-compose up api
+
+# Dashboard only (requires API)
+docker-compose up api dashboard
+
+# MLflow UI only
+docker-compose up mlflow
+```
+
+### Stop Services
+
+```bash
+docker-compose down
+```
+
+### Build Image Only
+
+```bash
+docker build -t credit-scoring-model .
 ```
 
 ---
@@ -167,4 +221,20 @@ uvicorn src.api.main:app --reload --port 8000
 
 # 4. Start dashboard (in another terminal)
 streamlit run src/dashboard.py
+```
+
+---
+
+## Quick Start (Docker)
+
+```bash
+# 1. Train models first (local)
+python -m src.data_processing
+python -m src.train
+
+# 2. Start all services with Docker
+docker-compose up --build -d
+
+# 3. Open dashboard
+# http://localhost:8501
 ```

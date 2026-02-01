@@ -1,0 +1,53 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv/
+ENV/
+env/
+.eggs/
+*.egg-info/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build
+dist/
+build/
+*.manifest
+*.spec
+
+# Misc
+*.log
+.DS_Store
+Thumbs.db
+
+# Documentation (keep for reference but don't need in container)
+*.md
+!README.md
+
+# Large files that should be mounted as volumes
+# Uncomment if you want to exclude these from build
+# data/
+# mlruns/
+# models/
